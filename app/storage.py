@@ -1,28 +1,59 @@
-tasks_db: dict[int, dict] = {}
-_next_id = 1
+import os
+import psycopg
+from psycopg.rows import dict_row
+
+
+def get_connection():
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("La variable d'environnement DATABASE_URL est obligatoire.")
+    return psycopg.connect(database_url, row_factory=dict_row)
+
+
+def init_db() -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                create table if not exists tasks (
+                    id serial primary key,
+                    title text not null,
+                    done boolean not null default false
+                );
+            """)
 
 
 def list_tasks() -> list[dict]:
-    return list(tasks_db.values())
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select id, title, done from tasks order by id;")
+            return cur.fetchall()
 
 
 def get_task(task_id: int) -> dict | None:
-    return tasks_db.get(task_id)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select id, title, done from tasks where id = %s;", (task_id,))
+            return cur.fetchone()
 
 
 def create_task(title: str) -> dict:
-    global _next_id
-    task = {"id": _next_id, "title": title, "done": False}
-    tasks_db[_next_id] = task
-    _next_id += 1
-    return task
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into tasks (title, done) values (%s, false) returning id, title, done;",
+                (title,)
+            )
+            return cur.fetchone()
 
 
 def delete_task(task_id: int) -> bool:
-    return tasks_db.pop(task_id, None) is not None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("delete from tasks where id = %s;", (task_id,))
+            return cur.rowcount > 0
 
 
 def reset() -> None:
-    global _next_id
-    tasks_db.clear()
-    _next_id = 1
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("truncate table tasks restart identity;")

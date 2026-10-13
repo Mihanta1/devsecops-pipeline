@@ -9,6 +9,7 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def clean_storage():
+    storage.init_db() 
     storage.reset()
 
 
