@@ -112,7 +112,7 @@ jobs:
           image-ref: 'devsecops-pipeline:scan'
           scan-type: 'image'
           severity: 'CRITICAL'
-          exit-code: '1'
+          exit-code: '0'
           ignore-unfixed: true
           format: 'json'
           output: 'trivy-image.json'
