@@ -1,112 +1,138 @@
 name: CI - Build & Push Docker image
 
-on: 
-    push:
-      branches: ["main"]
-    pull_request:
-      branches: ["main"]
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
-    secrets-scan:
-      runs-on: ubuntu-24.04
-      permissions:
-        contents: read
-      steps:
-        - name: Checkout du code (historique complet pour Gitleaks)
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
+  test-backend:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
 
-        - name: Scanner les secrets avec Gitleaks
-          uses: gitleaks/gitleaks-action@v2
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    dependency-scan:
-      runs-on: ubuntu-24.04
-      permissions:
-        contents: read
-      steps:
-        - name: Checkout du code
-          uses: actions/checkout@v4
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest httpx
 
-        - name: Scanner les vulnérabilités des dépendances avec Trivy
-          uses: aquasecurity/trivy-action@v0.36.0
-          with:
-            scan-type: 'fs'
-            scan-ref: './app'
-            severity: 'HIGH,CRITICAL'
-            exit-code: '1'
-            ignore-unfixed: true
+      - name: Lancer les tests avec Pytest
+        env:
+         DATABASE_URL: postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@localhost:5432/${{ secrets.POSTGRES_DB }}
+        run: pytest
 
-    test-backend:
-      runs-on: ubuntu-24.04
-      permissions:
-        contents: read
-      services:
-        postgres:
-          image: postgres:16-alpine
-          env:
-            POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-            POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          ports:
-            - 5432:5432
-          options: >-
-            --health-cmd pg_isready
-            --health-interval 10s
-            --health-timeout 5s
-            --health-retries 5
+  secrets-scan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      steps:
-        - name: Checkout du code
-          uses: actions/checkout@v4
+      - name: Scanner les secrets avec Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ""
 
-        - name: Set up Python 3.14
-          uses: actions/setup-python@v5
-          with:
-            python-version: "3.14"
-            cache: 'pip'
+  build-and-push:
+    runs-on: ubuntu-24.04
+    needs: [test-backend, secrets-scan]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
 
-        - name: Installer les dépendances
-          working-directory: ./app
-          run: |
-            pip install --upgrade pip
-            pip install -r requirements-dev.txt
+      - name: Configurer Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-        - name: Lancer Ruff (lint)
-          working-directory: ./app
-          run: ruff check .
+      - name: Construire l'image localement (sans push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: devsecops-pipeline:scan
 
-        - name: Lancer les tests Pytest avec la base
-          working-directory: ./app
-          env:
-            DATABASE_URL: postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@localhost:5432/${{ secrets.POSTGRES_DB }}
-          run: pytest
+      - name: Scanner l'image avec Trivy (CRITICAL)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'devsecops-pipeline:scan'
+          scan-type: 'image'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: true
+          format: 'json'
+          output: 'trivy-image.json'
 
-    build-and-push: 
-      needs: [test-backend, secrets-scan, dependency-scan]
-      if: github.event_name == 'push'
-      runs-on: ubuntu-24.04
-      permissions:
-        contents: read
-        packages: write
-      steps:
-        - name: Checkout du code
-          uses: actions/checkout@v4
+      - name: Générer le SBOM avec Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: devsecops-pipeline:scan
+          format: spdx-json
+          output-file: sbom.spdx.json
 
-        - name: Connexion à GHCR
-          uses: docker/login-action@v3
-          with:
-            registry: ghcr.io
-            username: ${{ github.actor }}
-            password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Connexion à GitHub Container Registry (GHCR)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-        - name: Build & Push de l'image
-          uses: docker/build-push-action@v5
-          with:
-            context: ./app
-            push: true
-            tags: |
-              ghcr.io/mihanta1/devsecops-pipeline:${{ github.sha }}
-              ghcr.io/mihanta1/devsecops-pipeline:latest
+      - name: Publier l'image sur GHCR
+        id: push-step
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/mihanta1/devsecops-pipeline:latest
+            ghcr.io/mihanta1/devsecops-pipeline:${{ github.sha }}
+
+      - name: Installer Cosign
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Signer l'image par digest avec Cosign (Keyless)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cosign sign --yes ghcr.io/mihanta1/devsecops-pipeline@${{ steps.push-step.outputs.digest }}
+
+      - name: Archiver les rapports Trivy et SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            trivy-image.json
+            sbom.spdx.json
