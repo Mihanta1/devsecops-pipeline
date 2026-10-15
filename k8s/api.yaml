@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/mihanta1/devsecops-pipeline:latest
+          image: ghcr.io/mihanta1/devsecops-pipeline@sha256:4126a6e9a5c38299e74e872fbd4ce49f51e1d9851936a9c0271e5cf8e44ac326
           ports:
             - containerPort: 8000
           env:
