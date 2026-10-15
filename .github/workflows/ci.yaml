@@ -181,7 +181,7 @@ jobs:
         run: |
           IMAGE="ghcr.io/mihanta1/devsecops-pipeline@${{ needs.build-and-push.outputs.digest }}"
           cosign verify \
-            --certificate-identity-regexp "https://github.com/mihanta1/.*" \
+            --certificate-identity-regexp "https://github.com/Mihanta1/.*" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             $IMAGE
 
