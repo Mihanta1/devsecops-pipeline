@@ -38,7 +38,22 @@ jobs:
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
           ignore-unfixed: true
+  iac-scan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
 
+      - name: Scanner l'IaC avec Trivy (config)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          format: 'table'
   test-backend:
     runs-on: ubuntu-24.04
     permissions:
@@ -86,7 +101,7 @@ jobs:
 
   build-and-push:
     runs-on: ubuntu-24.04
-    needs: [test-backend, secrets-scan, dependency-scan]
+    needs: [test-backend, secrets-scan, dependency-scan, iac-scan]
     outputs:
       digest: ${{ steps.push-step.outputs.digest }}
     permissions:
@@ -168,8 +183,7 @@ jobs:
     needs: [build-and-push]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write
-      id-token: write
+      contents: read
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
@@ -177,25 +191,41 @@ jobs:
       - name: Installer Cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Vérifier la signature de l'image (Keyless)
+      - name: Vérifier la signature de l'image (keyless)
         run: |
-          IMAGE="ghcr.io/mihanta1/devsecops-pipeline@${{ needs.build-and-push.outputs.digest }}"
           cosign verify \
-            --certificate-identity-regexp "https://github.com/Mihanta1/.*" \
+            --certificate-identity "https://github.com/Mihanta1/devsecops-pipeline/.github/workflows/ci.yaml@refs/heads/main" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            $IMAGE
+            "ghcr.io/mihanta1/devsecops-pipeline@${{ needs.build-and-push.outputs.digest }}"
 
-      - name: Mettre à jour le manifeste k8s avec le digest vérifié
+      - name: Créer un cluster kind éphémère
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+
+      - name: Créer le Secret de la base
         run: |
-          DIGEST="${{ needs.build-and-push.outputs.digest }}"
-          IMAGE_REF="ghcr.io/mihanta1/devsecops-pipeline@$DIGEST"
-          
-          # Remplace la ligne image dans api.yaml par l'image pointant vers le digest exact
-          sed -i "s|image: .*|image: $IMAGE_REF|g" k8s/api.yaml
+          kubectl create secret generic db-secret \
+            --from-literal=POSTGRES_USER=app \
+            --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
+            --from-literal=POSTGRES_DB=tasks
 
-          # Commit et push automatiques du manifeste mis à jour
-          git config --global user.name "GitHub Actions Bot"
-          git config --global user.email "actions@github.com"
-          git add k8s/api.yaml
-          git commit -m "chore(cd): mise à jour de l'image vers le digest vérifié [skip ci]" || exit 0
-          git push
+      - name: Déployer avec le digest vérifié
+        run: |
+          sed -i "s|image: .*|image: ghcr.io/mihanta1/devsecops-pipeline@${{ needs.build-and-push.outputs.digest }}|" k8s/api.yaml
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/db --timeout=180s
+          kubectl rollout status deployment/task-api --timeout=180s
+
+      - name: Tester /health
+        run: |
+          kubectl port-forward svc/task-api-service 8000:8000 &
+          sleep 5
+          curl -fsS http://localhost:8000/health
+
+      - name: Diagnostic en cas d'échec
+        if: failure()
+        run: |
+          kubectl get pods
+          kubectl describe pods
+          kubectl logs deployment/task-api --tail=50 || true        
