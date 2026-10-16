@@ -1,0 +1,42 @@
+- name: Préparer l'hôte de déploiement
+  hosts: local
+  become: true
+  vars:
+    deploy_user: deploy
+    app_dir: /opt/devsecops
+  tasks:
+    - name: Installer les paquets de base
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, git, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Créer l'utilisateur de déploiement
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Créer le dossier de l'application
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        mode: "0750"
+
+    - name: Autoriser SSH et l'API dans le pare-feu
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ["22", "8000"]
+      tags: firewall
+
+    - name: Activer le pare-feu (refus par défaut du trafic entrant)
+      community.general.ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+      tags: firewall
