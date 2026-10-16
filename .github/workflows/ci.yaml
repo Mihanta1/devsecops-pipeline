@@ -38,7 +38,22 @@ jobs:
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
           ignore-unfixed: true
+  iac-scan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
 
+      - name: Scanner l'IaC avec Trivy (config)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          format: 'table'
   test-backend:
     runs-on: ubuntu-24.04
     permissions:
@@ -86,7 +101,7 @@ jobs:
 
   build-and-push:
     runs-on: ubuntu-24.04
-    needs: [test-backend, secrets-scan, dependency-scan]
+    needs: [test-backend, secrets-scan, dependency-scan, iac-scan]
     outputs:
       digest: ${{ steps.push-step.outputs.digest }}
     permissions:
