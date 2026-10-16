@@ -12,6 +12,11 @@ spec:
       labels:
         app: task-api
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           image: ghcr.io/mihanta1/devsecops-pipeline:latest
