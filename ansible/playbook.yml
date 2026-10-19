@@ -11,6 +11,18 @@
         state: present
         update_cache: true
         cache_valid_time: 3600
+        
+    - name: Vérifier si Docker est déjà présent
+      ansible.builtin.command: which docker
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installer Docker si absent
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+      when: docker_check.rc != 0
 
     - name: Créer l'utilisateur de déploiement
       ansible.builtin.user:
